@@ -1,0 +1,55 @@
+services:
+  # Base de Datos PostgreSQL para HC-SCAN
+  postgres:
+    image: postgres:16-alpine
+    container_name: hc_scan_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=helpcopies_pass
+      - POSTGRES_DB=hc_scan_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hc_scan_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hc_scan_network
+
+  # Backend NestJS (Node 22 / 24)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hc_scan_api
+    restart: unless-stopped
+    ports:
+      - "5002:5002"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_HOST=postgres
+      - NODE_ENV=production
+      - STORAGE_ROOT_PATH=/usr/src/app/storage
+    volumes:
+      - backend_uploads:/usr/src/app/uploads
+      - ../storage:/usr/src/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - hc_scan_network
+
+networks:
+  hc_scan_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  backend_uploads:
+    driver: local

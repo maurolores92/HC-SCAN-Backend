@@ -1,0 +1,14 @@
+node_modules
+dist
+npm-debug.log
+.git
+.gitignore
+.env
+.DS_Store
+.idea
+.vscode
+scratch/
+uploads/
+coverage/
+tsconfig.build.tsbuildinfo
+
