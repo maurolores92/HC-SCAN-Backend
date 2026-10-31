@@ -16,6 +16,24 @@ export class QueryDocumentDto {
   source?: DocumentSource;
 
   @IsOptional()
+  @IsString()
+  documentType?: string;
+
+  @IsOptional()
+  @IsString()
+  dateFrom?: string;
+
+  @IsOptional()
+  @IsString()
+  dateTo?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  filterCompanyId?: number;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -27,4 +45,3 @@ export class QueryDocumentDto {
   @Min(1)
   limit?: number = 20;
 }
-

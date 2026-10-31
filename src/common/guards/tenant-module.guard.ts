@@ -7,6 +7,10 @@ import {
 import { Reflector } from '@nestjs/core';
 import { TENANT_MODULE_KEY } from '../decorators/require-tenant-module.decorator';
 import { Company, CompanyStatus } from '../../modules/companies/company.model';
+import {
+  isPlatformSuperAdmin,
+  requireTenantCompanyId,
+} from '../utils/tenant-scope.util';
 
 @Injectable()
 export class TenantModuleGuard implements CanActivate {
@@ -29,22 +33,14 @@ export class TenantModuleGuard implements CanActivate {
       return false;
     }
 
-    // Super Admin de la plataforma tiene acceso irrestricto
-    const isSuperAdmin =
-      user.role === 'superadmin' ||
-      (user.isAdmin && (user.companyId === null || user.companyId === undefined));
-
-    if (isSuperAdmin) {
-      return true;
-    }
-
-    if (!user.companyId) {
+    if (isPlatformSuperAdmin(user)) {
       throw new ForbiddenException(
-        'El usuario no tiene una compañía asociada para acceder a este módulo.',
+        `El Super Administrador de plataforma no opera dentro del módulo '${requiredModule}' de compañías.`,
       );
     }
 
-    const company = await Company.findByPk(user.companyId);
+    const companyId = requireTenantCompanyId(user);
+    const company = await Company.findByPk(companyId);
     if (!company) {
       throw new ForbiddenException('La compañía asignada al usuario no existe.');
     }
@@ -71,4 +67,3 @@ export class TenantModuleGuard implements CanActivate {
     return true;
   }
 }
-

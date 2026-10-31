@@ -14,13 +14,10 @@ import { RolePermission } from './role-permission/role-permission.model';
 
 export enum CategoriaPermiso {
   CORE = 'CORE',
-  COMPANIES = 'COMPANIES',
   USERS = 'USERS',
   ROLES = 'ROLES',
-  PERMISSIONS = 'PERMISSIONS',
   DOCUMENTS = 'DOCUMENTS',
   AUDIT = 'AUDIT',
-  NOTIFICATIONS = 'NOTIFICATIONS',
 }
 
 @Table({ timestamps: true, tableName: 'permissions', underscored: true })
@@ -31,10 +28,10 @@ export class Permission extends Model {
   declare id: number;
 
   @Column({ type: DataType.STRING, unique: true })
-  declare name: string; // e.g. CREATE_USER
+  declare name: string;
 
   @Column(DataType.STRING)
-  declare displayName: string; // e.g. Crear usuarios
+  declare displayName: string;
 
   @Column(DataType.STRING)
   declare description: string;

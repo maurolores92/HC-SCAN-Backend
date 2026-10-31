@@ -28,16 +28,16 @@ export interface NotificationDefinition {
 }
 
 export const NOTIFICATION_REGISTRY: Record<string, NotificationDefinition> = {
-  // ── 1. Documentos y Procesamiento IA ──────────────────────
+  // ── 1. Documentos y Procesamiento IA (Exclusivo de cada Compañía) ─────────
   'document.uploaded': {
     key: 'document.uploaded',
     category: NotificationCategory.DOCUMENTS,
     label: 'Documento subido',
-    description: 'Cuando se carga un nuevo archivo PDF a la plataforma',
+    description: 'Cuando se carga un nuevo archivo PDF a la compañía',
     icon: 'tabler:file-upload',
     emoji: '📄',
     defaultInApp: true,
-    defaultRecipients: ['company_admin', 'target_user'],
+    defaultRecipients: ['company_admin', 'company_users', 'target_user'],
   },
   'document.processed': {
     key: 'document.processed',
@@ -47,7 +47,7 @@ export const NOTIFICATION_REGISTRY: Record<string, NotificationDefinition> = {
     icon: 'tabler:sparkles',
     emoji: '✨',
     defaultInApp: true,
-    defaultRecipients: ['company_admin', 'target_user'],
+    defaultRecipients: ['company_admin', 'company_users', 'target_user'],
   },
   'document.error': {
     key: 'document.error',
@@ -60,7 +60,7 @@ export const NOTIFICATION_REGISTRY: Record<string, NotificationDefinition> = {
     defaultRecipients: ['company_admin', 'target_user'],
   },
 
-  // ── 2. Compañías / Tenants ────────────────────────────────
+  // ── 2. Compañías / Tenants & Planes (Plataforma y Límites) ────────────────
   'system.company_created': {
     key: 'system.company_created',
     category: NotificationCategory.COMPANIES,
@@ -81,8 +81,38 @@ export const NOTIFICATION_REGISTRY: Record<string, NotificationDefinition> = {
     defaultInApp: true,
     defaultRecipients: ['superadmin', 'company_admin'],
   },
+  'company.plan_updated': {
+    key: 'company.plan_updated',
+    category: NotificationCategory.COMPANIES,
+    label: 'Plan o límites actualizados',
+    description: 'Cuando el Super Admin asigna o modifica el plan y cupos de una compañía',
+    icon: 'tabler:award',
+    emoji: '🏅',
+    defaultInApp: true,
+    defaultRecipients: ['superadmin', 'company_admin'],
+  },
+  'company.quota_warning': {
+    key: 'company.quota_warning',
+    category: NotificationCategory.COMPANIES,
+    label: 'Alerta preventiva de cupo',
+    description: 'Cuando el consumo de usuarios, storage o consultas IA supera el 85% del plan',
+    icon: 'tabler:gauge',
+    emoji: '⚡',
+    defaultInApp: true,
+    defaultRecipients: ['company_admin', 'superadmin'],
+  },
+  'company.quota_exceeded': {
+    key: 'company.quota_exceeded',
+    category: NotificationCategory.COMPANIES,
+    label: 'Límite de plan alcanzado',
+    description: 'Cuando se alcanza el 100% de un límite contratado (usuarios, storage o IA)',
+    icon: 'tabler:alert-octagon',
+    emoji: '🛑',
+    defaultInApp: true,
+    defaultRecipients: ['company_admin', 'superadmin'],
+  },
 
-  // ── 3. Usuarios y Seguridad ───────────────────────────────
+  // ── 3. Usuarios y Seguridad (Aislados por Compañía) ───────────────────────
   'system.user_created': {
     key: 'system.user_created',
     category: NotificationCategory.SYSTEM,
@@ -91,16 +121,16 @@ export const NOTIFICATION_REGISTRY: Record<string, NotificationDefinition> = {
     icon: 'tabler:user-plus',
     emoji: '👤',
     defaultInApp: true,
-    defaultRecipients: ['company_admin', 'superadmin'],
+    defaultRecipients: ['company_admin'],
   },
   'system.security_alert': {
     key: 'system.security_alert',
     category: NotificationCategory.SECURITY,
     label: 'Alerta de seguridad',
-    description: 'Eventos críticos de seguridad, creación o cambios de roles y permisos',
+    description: 'Eventos críticos de seguridad, creación o cambios de roles y contraseñas',
     icon: 'tabler:shield-lock',
     emoji: '🚨',
     defaultInApp: true,
-    defaultRecipients: ['superadmin', 'company_admin'],
+    defaultRecipients: ['company_admin', 'target_user'],
   },
 };

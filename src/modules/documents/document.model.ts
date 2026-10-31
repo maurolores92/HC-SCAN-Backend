@@ -112,12 +112,134 @@ export class Document extends Model {
   })
   declare fileHash: string | null;
 
+  /**
+   * Tipo de documento abierto inferido dinámicamente (ej. 'factura', 'remito', 'contrato', 'legajo', etc.).
+   */
   @Column({
-    type: DataType.JSON,
+    type: DataType.STRING(80),
+    allowNull: true,
+    field: 'document_type',
+  })
+  declare documentType: string | null;
+
+  /**
+   * Resumen ejecutivo breve del contenido del documento.
+   */
+  @Column({
+    type: DataType.TEXT,
+    allowNull: true,
+  })
+  declare summary: string | null;
+
+  @Column({
+    type: DataType.STRING(100),
+    allowNull: true,
+    field: 'document_number',
+  })
+  declare documentNumber: string | null;
+
+  @Column({
+    type: DataType.DATEONLY,
+    allowNull: true,
+    field: 'document_date',
+  })
+  declare documentDate: string | null;
+
+  @Column({
+    type: DataType.STRING(200),
+    allowNull: true,
+    field: 'issuer_name',
+  })
+  declare issuerName: string | null;
+
+  @Column({
+    type: DataType.STRING(50),
+    allowNull: true,
+    field: 'issuer_tax_id',
+  })
+  declare issuerTaxId: string | null;
+
+  @Column({
+    type: DataType.STRING(200),
+    allowNull: true,
+    field: 'recipient_name',
+  })
+  declare recipientName: string | null;
+
+  @Column({
+    type: DataType.STRING(200),
+    allowNull: true,
+    field: 'responsible_person',
+  })
+  declare responsiblePerson: string | null;
+
+  @Column({
+    type: DataType.STRING(10),
+    allowNull: true,
+  })
+  declare currency: string | null;
+
+  @Column({
+    type: DataType.DECIMAL(15, 2),
+    allowNull: true,
+    field: 'total_amount',
+  })
+  declare totalAmount: number | null;
+
+  @Column({
+    type: DataType.JSONB,
+    allowNull: true,
+    defaultValue: [],
+  })
+  declare tags: string[] | null;
+
+  /**
+   * Metadatos dinámicos libres en JSONB (attributes clave-valor abiertos según el rubro, items, involvedParties, dates, amounts).
+   */
+  @Column({
+    type: DataType.JSONB,
     allowNull: true,
     field: 'extracted_data',
   })
   declare extractedData: Record<string, any> | null;
+
+  /**
+   * Texto completo extraído/transcripto del PDF para búsqueda profunda sobre cualquier dato.
+   */
+  @Column({
+    type: DataType.TEXT,
+    allowNull: true,
+    field: 'raw_text',
+  })
+  declare rawText: string | null;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+    field: 'page_count',
+  })
+  declare pageCount: number | null;
+
+  @Column({
+    type: DataType.FLOAT,
+    allowNull: true,
+    field: 'ai_confidence',
+  })
+  declare aiConfidence: number | null;
+
+  @Column({
+    type: DataType.STRING(40),
+    allowNull: true,
+    field: 'extraction_engine',
+  })
+  declare extractionEngine: string | null;
+
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+    field: 'processed_at',
+  })
+  declare processedAt: Date | null;
 
   @Column({
     type: DataType.TEXT,
@@ -131,4 +253,3 @@ export class Document extends Model {
     return DocumentStatusInfo[this.getDataValue('status') as DocumentStatus] || DocumentStatusInfo[DocumentStatus.PENDING];
   }
 }
-

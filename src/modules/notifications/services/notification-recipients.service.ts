@@ -17,6 +17,7 @@ export class NotificationRecipientsService {
     },
   ): Promise<number[]> {
     const recipientIds = new Set<number>();
+    const likeOp = Op.iLike ? Op.iLike : Op.like;
 
     if (rules.includes('target_user') && context.targetUserId) {
       recipientIds.add(Number(context.targetUserId));
@@ -24,18 +25,26 @@ export class NotificationRecipientsService {
 
     if (rules.includes('superadmin')) {
       try {
+        const superAdminRoles = await Role.findAll({
+          where: { slug: 'superadmin' },
+          attributes: ['id'],
+        });
+        const superAdminRoleIds = superAdminRoles.map((r) => r.id);
+
         const superadmins = await Users.findAll({
           where: {
             [Op.and]: [
               {
                 [Op.or]: [
-                  { isAdmin: true },
-                  { username: { [Op.iLike ? Op.iLike : Op.like]: 'superadmin' } },
+                  { username: { [likeOp]: 'superadmin' } },
+                  ...(superAdminRoleIds.length > 0
+                    ? [{ roleId: { [Op.in]: superAdminRoleIds } }]
+                    : []),
                 ],
               },
               {
                 [Op.or]: [
-                  { status: { [Op.iLike ? Op.iLike : Op.like]: 'active' } },
+                  { status: { [likeOp]: 'active' } },
                   { status: null },
                 ],
               },
@@ -52,39 +61,40 @@ export class NotificationRecipientsService {
       }
     }
 
-    if (rules.includes('company_admin')) {
+    // Aislar estrictamente por companyId: jamás difundir a todas las compañías si falta companyId
+    if (rules.includes('company_admin') && context.companyId) {
       try {
         const adminRoles = await Role.findAll({
           where: {
-            [Op.or]: [
-              { slug: 'company_admin' },
-              { slug: 'admin' },
-              { name: { [Op.iLike ? Op.iLike : Op.like]: '%admin%' } },
-            ],
+            slug: { [Op.in]: ['company_admin', 'admin'] },
           },
           attributes: ['id'],
         });
         const roleIds = adminRoles.map((r) => r.id);
-        if (roleIds.length > 0) {
-          const whereUser: any = {
-            roleId: { [Op.in]: roleIds },
-            [Op.or]: [
-              { status: { [Op.iLike ? Op.iLike : Op.like]: 'active' } },
-              { status: null },
+
+        const admins = await Users.findAll({
+          where: {
+            companyId: context.companyId,
+            username: { [Op.ne]: 'superadmin' },
+            [Op.and]: [
+              {
+                [Op.or]: [
+                  { isAdmin: true },
+                  ...(roleIds.length > 0 ? [{ roleId: { [Op.in]: roleIds } }] : []),
+                ],
+              },
+              {
+                [Op.or]: [
+                  { status: { [likeOp]: 'active' } },
+                  { status: null },
+                ],
+              },
             ],
-          };
-
-          if (context.companyId) {
-            whereUser.companyId = context.companyId;
-          }
-
-          const admins = await Users.findAll({
-            where: whereUser,
-            attributes: ['id'],
-          });
-          for (const a of admins) {
-            if (a.id) recipientIds.add(Number(a.id));
-          }
+          },
+          attributes: ['id'],
+        });
+        for (const a of admins) {
+          if (a.id) recipientIds.add(Number(a.id));
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -97,8 +107,9 @@ export class NotificationRecipientsService {
         const users = await Users.findAll({
           where: {
             companyId: context.companyId,
+            username: { [Op.ne]: 'superadmin' },
             [Op.or]: [
-              { status: { [Op.iLike ? Op.iLike : Op.like]: 'active' } },
+              { status: { [likeOp]: 'active' } },
               { status: null },
             ],
           },
@@ -124,40 +135,34 @@ export class NotificationRecipientsService {
     roleSlug: string,
     companyId?: number,
   ): Promise<number[]> {
+    if (roleSlug !== 'superadmin' && !companyId) {
+      return [];
+    }
+
+    const likeOp = Op.iLike ? Op.iLike : Op.like;
     const roles = await Role.findAll({
-      where: {
-        [Op.or]: [
-          { slug: roleSlug },
-          { name: { [Op.iLike ? Op.iLike : Op.like]: `%${roleSlug.replace(/_/g, ' ')}%` } },
-        ],
-      },
+      where: { slug: roleSlug },
       attributes: ['id'],
     });
 
     const roleIds = roles.map((r) => r.id);
-    const userIds = new Set<number>();
+    if (roleIds.length === 0) return [];
 
-    if (roleIds.length > 0) {
-      const whereUser: any = {
-        roleId: { [Op.in]: roleIds },
-        [Op.or]: [
-          { status: { [Op.iLike ? Op.iLike : Op.like]: 'active' } },
-          { status: null },
-        ],
-      };
-      if (companyId) {
-        whereUser.companyId = companyId;
-      }
-
-      const users = await Users.findAll({
-        where: whereUser,
-        attributes: ['id'],
-      });
-      for (const u of users) {
-        userIds.add(Number(u.id));
-      }
+    const whereUser: any = {
+      roleId: { [Op.in]: roleIds },
+      [Op.or]: [
+        { status: { [likeOp]: 'active' } },
+        { status: null },
+      ],
+    };
+    if (companyId) {
+      whereUser.companyId = companyId;
     }
 
-    return Array.from(userIds);
+    const users = await Users.findAll({
+      where: whereUser,
+      attributes: ['id'],
+    });
+    return users.map((u) => Number(u.id));
   }
 }

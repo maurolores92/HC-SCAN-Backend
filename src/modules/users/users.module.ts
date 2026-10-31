@@ -8,8 +8,12 @@ import { Company } from '../companies/company.model';
 import { JwtModule } from '@nestjs/jwt';
 import { AuditModule } from '../audit/audit.module';
 import { NotificationsModule } from '../notifications/notifications.module';
-import { UsersCustomRolesService } from './services/users-custom-roles.service';
-import { UsersAuthProfileService } from './services/users-auth-profile.service';
+import { PlansModule } from '../plans/plans.module';
+import {
+  UsersCustomRolesService,
+  UsersAuthProfileService,
+  UsersLifecycleService,
+} from './services';
 
 @Module({
   imports: [
@@ -17,14 +21,21 @@ import { UsersAuthProfileService } from './services/users-auth-profile.service';
     JwtModule,
     AuditModule,
     NotificationsModule,
+    PlansModule,
   ],
   controllers: [UsersController],
-  providers: [UsersService, UsersCustomRolesService, UsersAuthProfileService],
+  providers: [
+    UsersService,
+    UsersCustomRolesService,
+    UsersAuthProfileService,
+    UsersLifecycleService,
+  ],
   exports: [
     SequelizeModule,
     UsersService,
     UsersCustomRolesService,
     UsersAuthProfileService,
+    UsersLifecycleService,
   ],
 })
 export class UsersModule {}

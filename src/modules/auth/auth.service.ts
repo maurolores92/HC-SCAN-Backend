@@ -8,10 +8,13 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { SignInAuthDto } from './dto/signIn-auth.dto';
 import { RegisterDto } from '../users/dto/register.dto';
+import { RegisterTrialDto } from './dto/register-trial.dto';
 import { Role } from '../role/role.model';
 import { Company, CompanyStatus } from '../companies/company.model';
+import { Plan } from '../plans/plan.model';
 import { Permission } from '../permissions/permission.model';
-import { Users } from '../users/users.model';
+import { Users, UserStatus } from '../users/users.model';
+import { ensureTenantDirectories } from '../../common/utils/storage-path.util';
 
 @Injectable()
 export class AuthService {
@@ -34,12 +37,23 @@ export class AuthService {
     }
 
     // Validación multitenancy: estado de la compañía
-    let companyData: { id: number; name: string; slug: string } | null = null;
+    let companyData: { id: number; name: string; slug: string; planId?: number | null } | null = null;
     if (user.companyId) {
       const company = await Company.findByPk(user.companyId);
       if (!company) {
         throw new UnauthorizedException('La compañía asignada no existe');
       }
+      if (company.trialEndsAt && new Date(company.trialEndsAt) <= new Date()) {
+        await company.update({ status: CompanyStatus.INACTIVE });
+        await Users.update(
+          { status: UserStatus.INACTIVE },
+          { where: { companyId: company.id } },
+        );
+        throw new UnauthorizedException(
+          'El período de prueba de 6 días para tu empresa ha vencido. Contacta a HelpCopies para activar tu cuenta.',
+        );
+      }
+
       if (company.status === CompanyStatus.INACTIVE || company.status === CompanyStatus.SUSPENDED) {
         throw new UnauthorizedException(
           'El acceso está temporalmente inhabilitado porque la compañía se encuentra inactiva o suspendida',
@@ -49,6 +63,7 @@ export class AuthService {
         id: company.id,
         name: company.name,
         slug: company.slug,
+        planId: company.planId ?? null,
       };
     }
 
@@ -181,6 +196,7 @@ export class AuthService {
           {
             model: Company,
             as: 'company',
+            include: [{ model: Plan, as: 'plan' }],
           },
         ],
       });
@@ -223,5 +239,149 @@ export class AuthService {
     } catch (error) {
       throw new UnauthorizedException('Error al procesar la sesión');
     }
+  }
+
+  /**
+   * Registro público de autoservicio con prueba gratuita de 6 días.
+   * Crea la compañía (Tenant), asigna el plan de prueba y crea el usuario admin inicial.
+   */
+  async registerTrial(dto: RegisterTrialDto): Promise<any> {
+    const email = dto.email.toLowerCase().trim();
+    const isUnique = await this.usersService.isUserUnique(email);
+    if (!isUnique) {
+      throw new BadRequestException('Ya existe un usuario registrado con ese correo electrónico');
+    }
+
+    if (!dto.phone || !dto.phone.trim()) {
+      throw new BadRequestException('El número de teléfono o WhatsApp es obligatorio');
+    }
+
+    // 1. Obtener el plan de prueba o el plan seleccionado
+    let plan: Plan | null = null;
+    if (dto.planId) {
+      plan = await Plan.findByPk(dto.planId);
+    }
+    if (!plan) {
+      plan = await Plan.findOne({ where: { slug: 'trial', isActive: true } });
+    }
+    if (!plan) {
+      plan = await Plan.findOne({ where: { isTrial: true, isActive: true } });
+    }
+    if (!plan) {
+      plan = await Plan.findOne({ where: { isDefault: true, isActive: true } });
+    }
+    if (!plan) {
+      plan = await Plan.findOne({ where: { isActive: true }, order: [['id', 'ASC']] });
+    }
+
+    const trialDays = plan?.trialDays || 6;
+    const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+
+    // 2. Generar slug único para la nueva compañía
+    let baseSlug = dto.companyName
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+
+    if (!baseSlug) baseSlug = 'empresa';
+
+    let uniqueSlug = baseSlug;
+    let counter = 1;
+    while (await Company.findOne({ where: { slug: uniqueSlug } })) {
+      uniqueSlug = `${baseSlug}-${counter++}`;
+    }
+
+    // 3. Crear la compañía
+    const company = await Company.create({
+      name: dto.companyName.trim(),
+      slug: uniqueSlug,
+      email: email,
+      phone: dto.phone.trim(),
+      status: CompanyStatus.ACTIVE,
+      planId: plan ? plan.id : null,
+      isTrial: true,
+      trialEndsAt,
+      enabledModules: plan?.includedModules || ['documents', 'ai_queries', 'users', 'roles', 'audit'],
+      settings: {
+        trialStartedAt: new Date().toISOString(),
+        registeredVia: 'web_trial_register',
+      },
+    } as any);
+
+    // 4. Aprovisionar estructura física de almacenamiento
+    ensureTenantDirectories(company.id);
+
+    // 5. Asignar rol Administrador de Compañía
+    const userRole =
+      (await Role.findOne({ where: { slug: 'company_admin', companyId: null } })) ||
+      (await Role.findOne({ where: { slug: 'admin', companyId: null } }));
+
+    if (!userRole) {
+      throw new BadRequestException('El rol para la compañía no está configurado');
+    }
+
+    // 6. Hashear contraseña y crear usuario
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+    const fullNameParts = dto.fullName.trim().split(' ');
+    const name = fullNameParts[0] || 'Admin';
+    const lastName = fullNameParts.slice(1).join(' ') || dto.companyName;
+
+    const newUser = await Users.create({
+      name,
+      lastName,
+      email,
+      username: email.split('@')[0],
+      phone: dto.phone.trim(),
+      password: hashedPassword,
+      companyId: company.id,
+      roleId: userRole.id,
+      isAdmin: true,
+      status: UserStatus.ACTIVE,
+    } as any);
+
+    // 7. Generar token de sesión
+    const payload = {
+      id: newUser.id,
+      name: newUser.name,
+      email: newUser.email,
+      username: newUser.username,
+      companyId: company.id,
+      role: userRole.slug,
+    };
+    const accessToken = this.jwtService.sign(payload, { expiresIn: '24h' });
+
+    return {
+      message: 'Cuenta creada exitosamente. Tu prueba gratuita de 6 días está activa.',
+      accessToken,
+      trialEndsAt,
+      trialDaysRemaining: trialDays,
+      user: {
+        id: newUser.id,
+        name: newUser.name,
+        lastName: newUser.lastName,
+        email: newUser.email,
+        username: newUser.username,
+        phone: newUser.phone,
+        companyId: company.id,
+        role: userRole.slug,
+      },
+      company: {
+        id: company.id,
+        name: company.name,
+        slug: company.slug,
+        status: company.status,
+        trialEndsAt,
+        plan: plan
+          ? {
+              id: plan.id,
+              name: plan.name,
+              slug: plan.slug,
+              isTrial: true,
+            }
+          : null,
+      },
+    };
   }
 }

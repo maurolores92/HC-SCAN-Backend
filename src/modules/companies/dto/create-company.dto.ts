@@ -1,5 +1,6 @@
 import {
   IsArray,
+  IsBoolean,
   IsEmail,
   IsEnum,
   IsInt,
@@ -10,6 +11,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { CompanyStatus } from '../company.model';
@@ -54,6 +56,7 @@ export class CreateCompanyDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(255)
   logo?: string;
 
   @IsEnum(CompanyStatus, {
@@ -63,15 +66,55 @@ export class CreateCompanyDto {
   status?: CompanyStatus;
 
   @IsOptional()
+  @ValidateIf((_, val) => val !== null)
   @Type(() => Number)
   @IsInt()
-  @Min(1, { message: 'El límite de usuarios debe ser al menos 1' })
-  maxUsers?: number = 10;
+  @Min(1)
+  planId?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
+  useCustomLimits?: boolean;
+
+  @IsOptional()
+  @ValidateIf((_, val) => val !== null)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1, { message: 'El límite de usuarios debe ser al menos 1 o null (ilimitado)' })
+  maxUsers?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, val) => val !== null)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1, { message: 'El límite de documentos debe ser al menos 1 o null (ilimitado)' })
+  maxDocuments?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, val) => val !== null)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1, { message: 'El límite de almacenamiento debe ser al menos 1 MB o null (ilimitado)' })
+  maxStorageMb?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, val) => val !== null)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0, { message: 'El límite de consultas IA no puede ser negativo' })
+  maxAiQueriesMonthly?: number | null;
 
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   enabledModules?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  isTrial?: boolean;
+
+  @IsOptional()
+  trialEndsAt?: Date | null;
 
   @IsOptional()
   settings?: Record<string, any>;

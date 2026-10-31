@@ -10,6 +10,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { resolveJwtSecret } from '../../config/env-resolver';
 
 @WebSocketGateway({
   cors: { origin: true, credentials: true },
@@ -39,7 +40,7 @@ export class NotificationsGateway
       }
 
       const payload = this.jwtService.verify(token, {
-        secret: process.env.JWT_SECRET_KEY || 'hc_scan_jwt_secret_key_2026',
+        secret: resolveJwtSecret(),
       });
 
       const userId: number = Number(payload.id || payload.sub);

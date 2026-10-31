@@ -43,6 +43,7 @@ export const EntityLabel: Record<string, string> = {
   User: 'usuario',
   Role: 'rol',
   Company: 'compañía',
+  Plan: 'plan de suscripción',
   Permission: 'permiso',
   Notification: 'notificación',
   NotificationPreference: 'preferencia de notificación',

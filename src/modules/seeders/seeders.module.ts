@@ -5,10 +5,11 @@ import { SeedController } from './seeders.controller';
 import { Users } from '../users/users.model';
 import { Role } from '../role/role.model';
 import { Company } from '../companies/company.model';
+import { Plan } from '../plans/plan.model';
 import { Permission } from '../permissions/permission.model';
 
 @Module({
-  imports: [SequelizeModule.forFeature([Users, Role, Company, Permission])],
+  imports: [SequelizeModule.forFeature([Users, Role, Company, Plan, Permission])],
   providers: [SeedService],
   controllers: [SeedController],
   exports: [SeedService],

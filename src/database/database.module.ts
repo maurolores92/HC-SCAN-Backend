@@ -1,37 +1,40 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { SyncService } from './sync.service';
 import { SeedModule } from '../modules/seeders/seeders.module';
+import { resolveDatabaseEnv } from '../config/env-resolver';
 
 @Module({
   imports: [
     SequelizeModule.forRootAsync({
       imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        dialect: (process.env.DB_DIALECT as any) || 'postgres',
-        host: configService.get<string>('DATABASE_HOST'),
-        port: configService.get<number>('DATABASE_PORT'),
-        username: configService.get<string>('DATABASE_USER'),
-        password: configService.get<string>('DATABASE_PASSWORD'),
-        database: configService.get<string>('DATABASE_NAME'),
-        autoLoadModels: true,
-        define: {
-          underscored: true,
-          timestamps: true,
-        },
-        dialectOptions:
-          process.env.DB_DIALECT === 'mssql'
-            ? {
-                options: {
-                  encrypt: true,
-                  trustServerCertificate: true,
-                },
-              }
-            : {},
-        synchronize: false,
-      }),
+      useFactory: () => {
+        const db = resolveDatabaseEnv();
+        return {
+          dialect: (process.env.DB_DIALECT as any) || 'postgres',
+          host: db.host,
+          port: db.port,
+          username: db.username,
+          password: db.password,
+          database: db.database,
+          autoLoadModels: true,
+          define: {
+            underscored: true,
+            timestamps: true,
+          },
+          dialectOptions:
+            process.env.DB_DIALECT === 'mssql'
+              ? {
+                  options: {
+                    encrypt: true,
+                    trustServerCertificate: true,
+                  },
+                }
+              : {},
+          synchronize: false,
+        };
+      },
     }),
     SeedModule,
   ],

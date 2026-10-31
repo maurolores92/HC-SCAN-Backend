@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Op, Transaction, WhereOptions } from 'sequelize';
 import { Users, UserStatus } from '../users.model';
 
@@ -48,19 +48,22 @@ export async function validateUniqueUserCredentials(
 export function buildUsersPaginatedWhere(
   filters: UsersPaginatedFilters,
 ): WhereOptions {
+  if (!filters.companyId || filters.companyId <= 0) {
+    throw new ForbiddenException(
+      'Acceso denegado: Se requiere un identificador de compañía válido.',
+    );
+  }
+
   const baseStatus =
     filters.status === 'INACTIVE'
       ? UserStatus.INACTIVE
       : { [Op.ne]: UserStatus.INACTIVE };
 
   const where: Record<string | symbol, unknown> = {
+    companyId: Number(filters.companyId),
     status: baseStatus,
     username: { [Op.ne]: 'superadmin' },
   };
-
-  if (filters.companyId) {
-    where.companyId = filters.companyId;
-  }
 
   if (filters.search) {
     const searchWildcard = `%${filters.search}%`;

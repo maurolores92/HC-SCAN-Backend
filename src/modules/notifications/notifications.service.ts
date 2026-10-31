@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { Notification } from './notification.model';
 import { NotificationPreference } from './models/notification-preference.model';
 import {
@@ -13,6 +14,7 @@ import { NotificationRecipientsService } from './services/notification-recipient
 import { NotificationPreferencesService } from './services/notification-preferences.service';
 import { PushNotificationsService } from './services/push-notifications.service';
 import { Users } from '../users/users.model';
+import { isPlatformSuperAdmin } from '../../common/utils/tenant-scope.util';
 
 export interface NotifyPayload extends CreateNotificationDto {
   userId: number;
@@ -85,19 +87,10 @@ export class NotificationsService {
         companyId: payload.companyId ?? null,
       });
 
-      if (targetUserIds.length === 0) {
-        this.logger.log(
-          `dispatch: No recipients resolved for notification '${payload.type}'`,
-        );
-      }
-
-      const defaultTitle = def
-        ? `${def.emoji} ${def.label}`
-        : `Notificación del Sistema`;
-
-      const finalTitle = payload.title || defaultTitle;
+      const finalTitle =
+        payload.title ||
+        (def ? `${def.emoji} ${def.label}` : 'Notificación del Sistema');
       const finalBody = payload.body || '';
-
       const notificationData: Record<string, any> = {
         companyId: payload.companyId,
         emoji: def?.emoji || '🔔',
@@ -105,20 +98,20 @@ export class NotificationsService {
       };
 
       for (const targetId of targetUserIds) {
-        const isEnabled = await this.isTypeEnabledForUser(
-          targetId,
-          payload.type,
-        );
-        if (!isEnabled) {
-          this.logger.debug(
-            `dispatch: '${payload.type}' is muted for user ${targetId}`,
-          );
-          continue;
-        }
+        const isEnabled = await this.isTypeEnabledForUser(targetId, payload.type);
+        if (!isEnabled) continue;
 
         try {
+          const targetRecord = await Users.findByPk(targetId, {
+            attributes: ['id', 'companyId', 'username'],
+          });
+          const notificationCompanyId =
+            targetRecord?.username?.toLowerCase() === 'superadmin'
+              ? null
+              : payload.companyId ?? targetRecord?.companyId ?? null;
+
           const createdNotification = await this.notificationModel.create({
-            companyId: payload.companyId ?? null,
+            companyId: notificationCompanyId,
             userId: targetId,
             type: payload.type,
             title: finalTitle,
@@ -130,7 +123,6 @@ export class NotificationsService {
 
           this.gateway.emitToUser(targetId, createdNotification.toJSON());
 
-          // Despacho Push nativo en segundo plano
           this.pushNotificationsService
             .sendToUser(targetId, {
               title: finalTitle,
@@ -142,20 +134,12 @@ export class NotificationsService {
               },
             })
             .catch((pushErr: unknown) => {
-              const pMsg =
-                pushErr instanceof Error ? pushErr.message : String(pushErr);
-              this.logger.warn(
-                `Push dispatch warning for user ${targetId}: ${pMsg}`,
-              );
+              const pMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+              this.logger.warn(`Push dispatch warning for user ${targetId}: ${pMsg}`);
             });
-        } catch (insertError) {
-          const msg =
-            insertError instanceof Error
-              ? insertError.message
-              : String(insertError);
-          this.logger.error(
-            `dispatch: Error inserting notification for user ${targetId}: ${msg}`,
-          );
+        } catch (insertError: unknown) {
+          const msg = insertError instanceof Error ? insertError.message : String(insertError);
+          this.logger.error(`dispatch: Error inserting notification for user ${targetId}: ${msg}`);
         }
       }
 
@@ -171,41 +155,26 @@ export class NotificationsService {
       }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(
-        `dispatch: Unexpected error dispatching notification '${payload?.type}': ${msg}`,
-      );
+      this.logger.error(`dispatch: Error dispatching '${payload?.type}': ${msg}`);
     }
   }
 
   async notifyUser(payload: NotifyPayload): Promise<void> {
     try {
       const targetUserId = Number(payload.userId);
-      if (!targetUserId || isNaN(targetUserId)) {
-        this.logger.warn(
-          `notifyUser: Invalid target userId '${payload.userId}'`,
-        );
-        return;
-      }
+      if (!targetUserId || isNaN(targetUserId)) return;
 
-      const isEnabled = await this.isTypeEnabledForUser(
-        targetUserId,
-        payload.type,
-      );
-      if (!isEnabled) {
-        this.logger.debug(
-          `notifyUser: '${payload.type}' disabled for user ${targetUserId}`,
-        );
-        return;
-      }
+      const isEnabled = await this.isTypeEnabledForUser(targetUserId, payload.type);
+      if (!isEnabled) return;
 
-      let companyId = payload.companyId;
-      if (!companyId) {
-        const u = await Users.findByPk(targetUserId, { attributes: ['companyId'] });
-        companyId = u?.companyId ?? null;
-      }
+      const u = await Users.findByPk(targetUserId, { attributes: ['companyId', 'username'] });
+      const resolvedCompanyId =
+        u?.username?.toLowerCase() === 'superadmin'
+          ? null
+          : payload.companyId ?? u?.companyId ?? null;
 
       const notification = await this.notificationModel.create({
-        companyId: companyId ?? null,
+        companyId: resolvedCompanyId,
         userId: targetUserId,
         type: payload.type,
         title: payload.title,
@@ -216,7 +185,6 @@ export class NotificationsService {
       });
 
       this.gateway.emitToUser(targetUserId, notification.toJSON());
-
       this.pushNotificationsService
         .sendToUser(targetUserId, {
           title: payload.title,
@@ -227,22 +195,10 @@ export class NotificationsService {
             type: payload.type,
           },
         })
-        .catch((pushErr: unknown) => {
-          const pMsg =
-            pushErr instanceof Error ? pushErr.message : String(pushErr);
-          this.logger.warn(
-            `Push dispatch warning for user ${targetUserId}: ${pMsg}`,
-          );
-        });
-
-      this.logger.log(
-        `Notification sent to user ${targetUserId}: [${payload.type}] ${payload.title}`,
-      );
+        .catch(() => {});
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(
-        `Failed to notify user ${payload?.userId}: ${msg}`,
-      );
+      this.logger.error(`Failed to notify user ${payload?.userId}: ${msg}`);
     }
   }
 
@@ -251,23 +207,13 @@ export class NotificationsService {
     payload: Omit<NotifyPayload, 'userId'>,
     options?: { excludeUserId?: number },
   ): Promise<void> {
-    try {
-      const targetIds = await this.resolveRecipients(
-        ['company_admin', 'superadmin'],
-        { excludeUserId: options?.excludeUserId, companyId },
-      );
-
-      this.logger.log(
-        `notifyCompanyAdmins: Notificando '${payload.type}' a ${targetIds.length} usuarios: [${targetIds.join(', ')}]`,
-      );
-      for (const targetId of targetIds) {
-        await this.notifyUser({ ...payload, userId: targetId, companyId });
-      }
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(
-        `Failed to notify company admins: ${msg}`,
-      );
+    if (!companyId) return;
+    const targetIds = await this.resolveRecipients(['company_admin'], {
+      excludeUserId: options?.excludeUserId,
+      companyId,
+    });
+    for (const targetId of targetIds) {
+      await this.notifyUser({ ...payload, userId: targetId, companyId });
     }
   }
 
@@ -276,54 +222,48 @@ export class NotificationsService {
     payload: Omit<NotifyPayload, 'userId'>,
     companyId?: number,
   ): Promise<void> {
-    try {
-      const userIds = await this.recipientsService.resolveUserIdsByRoleSlug(
-        roleSlug,
-        companyId,
-      );
-
-      for (const targetId of userIds) {
-        await this.notifyUser({ ...payload, userId: targetId, companyId });
-      }
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to notify role ${roleSlug}: ${msg}`);
+    const userIds = await this.recipientsService.resolveUserIdsByRoleSlug(roleSlug, companyId);
+    for (const targetId of userIds) {
+      await this.notifyUser({ ...payload, userId: targetId, companyId });
     }
   }
 
-  broadcastEvent(event: string, data: any): void {
-    try {
-      this.gateway.broadcast(event, data);
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to broadcast event ${event}: ${msg}`);
+  private buildInboxWhere(userId: number, actorUser?: any): Record<string, any> {
+    const where: Record<string, any> = { userId };
+
+    if (actorUser && !isPlatformSuperAdmin(actorUser) && actorUser.companyId) {
+      where[Op.or as any] = [{ companyId: actorUser.companyId }, { companyId: null }];
+      where.type = { [Op.ne]: 'system.company_created' };
     }
+
+    return where;
   }
 
   async findAll(
     userId: number,
     page = 0,
     pageSize = 20,
+    actorUser?: any,
   ): Promise<{ data: Notification[]; total: number; unreadCount: number }> {
-    const limit = pageSize;
-    const offset = page * pageSize;
+    const where = this.buildInboxWhere(userId, actorUser);
 
     const { rows, count } = await this.notificationModel.findAndCountAll({
-      where: { userId },
-      limit,
-      offset,
+      where,
+      limit: pageSize,
+      offset: page * pageSize,
       order: [['createdAt', 'DESC']],
     });
 
     const unreadCount = await this.notificationModel.count({
-      where: { userId, read: false },
+      where: { ...where, read: false },
     });
 
     return { data: rows, total: count, unreadCount };
   }
 
-  async getUnreadCount(userId: number): Promise<number> {
-    return this.notificationModel.count({ where: { userId, read: false } });
+  async getUnreadCount(userId: number, actorUser?: any): Promise<number> {
+    const where = this.buildInboxWhere(userId, actorUser);
+    return this.notificationModel.count({ where: { ...where, read: false } });
   }
 
   async markAsRead(id: number, userId: number): Promise<void> {

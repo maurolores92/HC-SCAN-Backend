@@ -16,6 +16,7 @@ import { AuditModule } from './audit/audit.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { CompaniesModule } from './companies/companies.module';
+import { PlansModule } from './plans/plans.module';
 import { DocumentsModule } from './documents/documents.module';
 
 @Module({
@@ -30,6 +31,7 @@ import { DocumentsModule } from './documents/documents.module';
     NotificationsModule,
     PermissionsModule,
     RoleModule,
+    PlansModule,
     CompaniesModule,
     UsersModule,
     DocumentsModule,

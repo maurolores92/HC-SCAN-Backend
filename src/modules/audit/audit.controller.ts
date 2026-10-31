@@ -10,13 +10,13 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}
 
+  /**
+   * Consulta paginada de auditorías con aislamiento estricto por compañía.
+   * Los usuarios tenant solo ven movimientos propios de su compañía, nunca movimientos del Super Admin ni entidades globales.
+   */
   @Get()
   @RequirePermission('VIEW_AUDITS')
   findAll(@GetUser() user: any, @Query() query: QueryAuditDto) {
-    // Aislamiento multitenant: los usuarios que no sean superadmin solo ven auditorías de su empresa
-    if (user.role !== 'superadmin' && user.companyId) {
-      query.companyId = user.companyId;
-    }
-    return this.auditService.findAll(query);
+    return this.auditService.findAll(query, user);
   }
 }

@@ -1,7 +1,8 @@
 import {
-  Injectable,
-  ForbiddenException,
   BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { CrudService } from '../../common/crud/crud.service';
 import { InjectModel } from '@nestjs/sequelize';
@@ -13,8 +14,15 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { Permission } from '../permissions/permission.model';
 import { Users, UserStatus } from '../users/users.model';
 import { RolePermission } from '../permissions/role-permission/role-permission.model';
+import { DEPRECATED_PLATFORM_PERMISSIONS } from '../seeders/data/permissions.data';
+import {
+  isPlatformSuperAdmin,
+  requireTenantCompanyId,
+} from '../../common/utils/tenant-scope.util';
 
 export const SYSTEM_ROLE_SLUGS = ['superadmin', 'company_admin', 'user'];
+const TENANT_BASE_ROLE_SLUGS = ['company_admin', 'user'];
+const RESERVED_ROLE_SLUGS = ['superadmin', 'company_admin', 'admin', 'user'];
 
 @Injectable()
 export class RoleService extends CrudService<Role> {
@@ -27,25 +35,47 @@ export class RoleService extends CrudService<Role> {
   }
 
   override async create(data: any, user?: any): Promise<Role> {
+    if (isPlatformSuperAdmin(user)) {
+      throw new ForbiddenException(
+        'El Super Administrador no crea roles operativos de compañías.',
+      );
+    }
+
+    const tenantCompanyId = requireTenantCompanyId(user);
     const { permissions, ...roleData } = data;
 
-    if (
-      user &&
-      user.role !== 'superadmin' &&
-      permissions &&
-      Array.isArray(permissions) &&
-      permissions.length > 0
-    ) {
+    const normalizedSlug = String(roleData.slug || roleData.name || '')
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, '-');
+
+    if (!normalizedSlug || RESERVED_ROLE_SLUGS.includes(normalizedSlug)) {
+      throw new BadRequestException(
+        'El nombre o identificador del rol está reservado por el sistema.',
+      );
+    }
+
+    const duplicate = await this.roleModel.findOne({
+      where: { companyId: tenantCompanyId, slug: normalizedSlug },
+    });
+    if (duplicate) {
+      throw new BadRequestException(
+        `Ya existe un rol "${roleData.name || normalizedSlug}" en su compañía.`,
+      );
+    }
+
+    if (Array.isArray(permissions) && permissions.length > 0) {
       await this.validatePermissionsLimit(user, permissions);
     }
 
-    // Multitenancy: si no es superadmin, asociar rol a la compañía del usuario
-    if (user && user.role !== 'superadmin' && user.companyId) {
-      roleData.companyId = user.companyId;
-    }
+    const role = await super.create({
+      ...roleData,
+      slug: normalizedSlug,
+      companyId: tenantCompanyId,
+      userId: user?.id ?? null,
+    });
 
-    const role = await super.create(roleData);
-    if (permissions && Array.isArray(permissions)) {
+    if (Array.isArray(permissions)) {
       await role.$set('permissions', permissions);
     }
 
@@ -53,9 +83,9 @@ export class RoleService extends CrudService<Role> {
       action: AuditAction.CREATE,
       entity: 'Role',
       entityId: role.id,
-      companyId: role.companyId ?? user?.companyId,
+      companyId: tenantCompanyId,
       payload: role.toJSON(),
-      userId: user?.id || data.userId || undefined,
+      userId: user?.id,
       description: `Se ha creado el rol "${role.name ?? role.id}"`,
     });
 
@@ -63,64 +93,79 @@ export class RoleService extends CrudService<Role> {
       type: 'system.security_alert',
       title: '🚨 Nuevo rol configurado',
       body: `Se ha creado el rol "${role.name}".`,
-      actorUser: { id: user?.id || data.userId },
-      extraData: { roleId: role.id, companyId: role.companyId },
+      companyId: tenantCompanyId,
+      actorUser: { id: user?.id },
+      extraData: { roleId: role.id, companyId: tenantCompanyId },
     });
 
-    return this.findOne(role.id);
+    return this.findOne(role.id, user);
   }
 
   override async update(id: number, data: any, user?: any): Promise<Role> {
-    const oldRole = await this.findOne(id);
-    if (!oldRole) throw new ForbiddenException('El rol no existe.');
-
-    if (oldRole.slug === 'superadmin') {
+    if (isPlatformSuperAdmin(user)) {
       throw new ForbiddenException(
-        'No puedes modificar el rol superadministrador.',
+        'El Super Administrador administra permisos globales desde el catálogo de permisos.',
       );
     }
 
-    // Si es un rol protegido del sistema, proteger nombre y slug
-    if (SYSTEM_ROLE_SLUGS.includes(oldRole.slug)) {
-      delete data.name;
-      delete data.slug;
+    const tenantCompanyId = requireTenantCompanyId(user);
+    const oldRole = await this.roleModel.findByPk(id, { include: [Permission] });
+    if (!oldRole) {
+      throw new NotFoundException('El rol solicitado no existe.');
     }
 
-    // Multitenant: verificar que no modifique roles de otra compañía
-    if (
-      user &&
-      user.role !== 'superadmin' &&
-      oldRole.companyId &&
-      oldRole.companyId !== user.companyId
-    ) {
+    if (!oldRole.companyId || SYSTEM_ROLE_SLUGS.includes(oldRole.slug)) {
+      throw new ForbiddenException(
+        'Los roles base predeterminados del sistema son de solo lectura.',
+      );
+    }
+
+    if (oldRole.companyId !== tenantCompanyId) {
       throw new ForbiddenException('No tienes permiso para modificar este rol.');
     }
 
     const { permissions, ...roleData } = data;
+    delete roleData.companyId;
+    delete roleData.userId;
 
-    if (
-      user &&
-      user.role !== 'superadmin' &&
-      permissions &&
-      Array.isArray(permissions)
-    ) {
+    if (roleData.name || roleData.slug) {
+      const nextSlug = String(roleData.slug || roleData.name)
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, '-');
+      if (RESERVED_ROLE_SLUGS.includes(nextSlug)) {
+        throw new BadRequestException('El nombre del rol está reservado por el sistema.');
+      }
+      const duplicate = await this.roleModel.findOne({
+        where: {
+          companyId: tenantCompanyId,
+          slug: nextSlug,
+          id: { [Op.ne]: id },
+        },
+      });
+      if (duplicate) {
+        throw new BadRequestException('Ya existe otro rol con ese nombre en su compañía.');
+      }
+      roleData.slug = nextSlug;
+    }
+
+    if (Array.isArray(permissions)) {
       await this.validatePermissionsLimit(user, permissions);
     }
 
     const updatedRole = await super.update(id, roleData);
-
-    if (permissions && Array.isArray(permissions)) {
+    if (Array.isArray(permissions)) {
       await updatedRole.$set('permissions', permissions);
     }
 
-    const finalRole = await this.findOne(id);
+    const finalRole = await this.findOne(id, user);
     await this.auditService.log({
       action: AuditAction.UPDATE,
       entity: 'Role',
       entityId: id,
-      companyId: finalRole.companyId ?? user?.companyId,
+      companyId: tenantCompanyId,
       payload: finalRole.toJSON(),
-      userId: user?.id || data.userId || undefined,
+      userId: user?.id,
       description: `Se ha actualizado el rol "${finalRole.name ?? id}"`,
     });
 
@@ -128,29 +173,32 @@ export class RoleService extends CrudService<Role> {
   }
 
   override async delete(id: number, user?: any): Promise<void> {
-    const oldRole = await this.findOne(id);
-    if (!oldRole) return;
-
-    if (SYSTEM_ROLE_SLUGS.includes(oldRole.slug)) {
+    if (isPlatformSuperAdmin(user)) {
       throw new ForbiddenException(
-        'No puedes eliminar un rol predeterminado del sistema.',
+        'El Super Administrador no elimina roles operativos de compañías.',
       );
     }
 
-    if (
-      user &&
-      user.role !== 'superadmin' &&
-      oldRole.companyId &&
-      oldRole.companyId !== user.companyId
-    ) {
+    const tenantCompanyId = requireTenantCompanyId(user);
+    const oldRole = await this.roleModel.findByPk(id);
+    if (!oldRole) {
+      throw new NotFoundException('El rol solicitado no existe.');
+    }
+
+    if (!oldRole.companyId || SYSTEM_ROLE_SLUGS.includes(oldRole.slug)) {
+      throw new ForbiddenException(
+        'No puedes eliminar un rol base predeterminado del sistema.',
+      );
+    }
+
+    if (oldRole.companyId !== tenantCompanyId) {
       throw new ForbiddenException('No tienes permiso para eliminar este rol.');
     }
 
     const previousData = oldRole.toJSON();
-
     const [affectedUsersCount] = await Users.update(
       { roleId: null },
-      { where: { roleId: id } },
+      { where: { roleId: id, companyId: tenantCompanyId } },
     );
 
     await RolePermission.destroy({ where: { roleId: id } });
@@ -160,7 +208,7 @@ export class RoleService extends CrudService<Role> {
       action: AuditAction.DELETE,
       entity: 'Role',
       entityId: id,
-      companyId: oldRole.companyId ?? user?.companyId,
+      companyId: tenantCompanyId,
       payload: { ...previousData, unassignedUsersCount: affectedUsersCount },
       userId: user?.id,
       description: `Se ha eliminado el rol "${previousData.name ?? id}".`,
@@ -168,75 +216,79 @@ export class RoleService extends CrudService<Role> {
   }
 
   override async findAll(user?: any): Promise<any[]> {
-    const whereClause: any = { slug: { [Op.ne]: 'superadmin' } };
+    return this.queryScopedRoles(user, true);
+  }
 
-    if (user && user.role !== 'superadmin' && user.companyId) {
-      whereClause[Op.or] = [
-        { companyId: null },
-        { companyId: user.companyId },
-      ];
+  async findEditableRoles(user?: any): Promise<any[]> {
+    return this.queryScopedRoles(user, false);
+  }
+
+  override async findOne(id: number, user?: any): Promise<Role> {
+    const role = await this.roleModel.findByPk(id, {
+      include: [Permission],
+    });
+
+    if (!role) {
+      throw new NotFoundException('Rol no encontrado.');
     }
 
+    if (user) {
+      if (isPlatformSuperAdmin(user)) {
+        if (role.companyId !== null || !TENANT_BASE_ROLE_SLUGS.includes(role.slug)) {
+          throw new ForbiddenException('Acceso denegado a rol personalizado de compañía.');
+        }
+      } else {
+        const tenantCompanyId = requireTenantCompanyId(user);
+        const isBaseRole =
+          role.companyId === null && TENANT_BASE_ROLE_SLUGS.includes(role.slug);
+        const isOwnCompanyRole = role.companyId === tenantCompanyId;
+
+        if (!isBaseRole && !isOwnCompanyRole) {
+          throw new ForbiddenException('No tienes permiso para consultar este rol.');
+        }
+      }
+    }
+
+    return role;
+  }
+
+  private async queryScopedRoles(user: any, includePermissions: boolean): Promise<any[]> {
+    if (isPlatformSuperAdmin(user)) {
+      const baseRoles = await this.roleModel.findAll({
+        where: {
+          companyId: null,
+          slug: { [Op.in]: TENANT_BASE_ROLE_SLUGS },
+        },
+        include: includePermissions ? [Permission] : [],
+        order: [['id', 'ASC']],
+      });
+      return baseRoles.map((r) => ({ ...r.toJSON(), usersCount: 0 }));
+    }
+
+    const tenantCompanyId = requireTenantCompanyId(user);
     const roles = await this.roleModel.findAll({
-      where: whereClause,
-      include: [Permission],
+      where: {
+        slug: { [Op.ne]: 'superadmin' },
+        [Op.or]: [
+          { companyId: null, slug: { [Op.in]: TENANT_BASE_ROLE_SLUGS } },
+          { companyId: tenantCompanyId },
+        ],
+      },
+      include: includePermissions ? [Permission] : [],
       order: [['id', 'ASC']],
     });
 
     const results: any[] = [];
     for (const role of roles) {
-      const userCountWhere: any = {
-        roleId: role.id,
-        status: { [Op.ne]: UserStatus.INACTIVE },
-      };
-
-      if (user && user.role !== 'superadmin' && user.companyId) {
-        userCountWhere.companyId = user.companyId;
-      }
-
-      const usersCount = await Users.count({ where: userCountWhere });
-      const roleData = role.toJSON();
-      roleData.usersCount = usersCount;
-      results.push(roleData);
-    }
-    return results;
-  }
-
-  override async findOne(id: number): Promise<Role> {
-    return this.roleModel.findByPk(id, {
-      include: [Permission],
-    }) as Promise<Role>;
-  }
-
-  async findEditableRoles(user?: any): Promise<any[]> {
-    const whereClause: any = { slug: { [Op.ne]: 'superadmin' } };
-
-    if (user && user.role !== 'superadmin' && user.companyId) {
-      whereClause[Op.or] = [
-        { companyId: null },
-        { companyId: user.companyId },
-      ];
-    }
-
-    const roles = await this.roleModel.findAll({
-      where: whereClause,
-    });
-
-    const results: any[] = [];
-    for (const role of roles) {
-      const userCountWhere: any = {
-        roleId: role.id,
-        status: { [Op.ne]: UserStatus.INACTIVE },
-      };
-
-      if (user && user.role !== 'superadmin' && user.companyId) {
-        userCountWhere.companyId = user.companyId;
-      }
-
-      const usersCount = await Users.count({ where: userCountWhere });
-      const roleData = role.toJSON();
-      roleData.usersCount = usersCount;
-      results.push(roleData);
+      const usersCount = await Users.count({
+        where: {
+          roleId: role.id,
+          companyId: tenantCompanyId,
+          username: { [Op.ne]: 'superadmin' },
+          status: { [Op.ne]: UserStatus.INACTIVE },
+        },
+      });
+      results.push({ ...role.toJSON(), usersCount });
     }
     return results;
   }
@@ -244,7 +296,7 @@ export class RoleService extends CrudService<Role> {
   private async validatePermissionsLimit(
     user: any,
     requestedPermissionIds: number[],
-  ) {
+  ): Promise<void> {
     if (!requestedPermissionIds || requestedPermissionIds.length === 0) return;
 
     const requestedPermissions = await Permission.findAll({
@@ -252,13 +304,21 @@ export class RoleService extends CrudService<Role> {
     });
 
     const requestedNames = requestedPermissions.map((p) => p.name);
-    const userPermissions = user.permissions || [];
+    if (requestedNames.some((name) => DEPRECATED_PLATFORM_PERMISSIONS.includes(name))) {
+      throw new ForbiddenException(
+        'No se permiten asignar permisos reservados de plataforma.',
+      );
+    }
 
-    const isValid = requestedNames.every((name) =>
-      userPermissions.includes(name),
-    );
+    if (user?.role === 'company_admin' || user?.isAdmin === true) {
+      return;
+    }
 
-    if (user.role !== 'superadmin' && !isValid) {
+    const userPermissions: string[] = Array.isArray(user?.permissions)
+      ? user.permissions
+      : [];
+    const isValid = requestedNames.every((name) => userPermissions.includes(name));
+    if (!isValid) {
       throw new ForbiddenException(
         'No puedes delegar permisos de módulos o acciones que no posees.',
       );

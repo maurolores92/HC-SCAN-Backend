@@ -5,15 +5,18 @@ import {
   UploadedFile,
   Param,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
 import * as fs from 'fs';
 import { Auth } from '../auth/decorators/auth.decorator';
+import { GetUser } from '../auth/decorators/get-user.decorator';
 import { getUploadsRootPath } from '../../common/utils/upload-path.util';
+import { isPlatformSuperAdmin } from '../../common/utils/tenant-scope.util';
 
-const ALLOWED_FOLDERS = ['documents', 'users', 'companies'];
+const ALLOWED_FOLDERS = ['users', 'companies'];
 
 @Controller('uploads')
 export class UploadsController {
@@ -22,12 +25,21 @@ export class UploadsController {
   @UseInterceptors(
     FileInterceptor('file', {
       storage: diskStorage({
-        destination: (req, file, cb) => {
+        destination: (req, _file, cb) => {
           const folder = req.params.folder as string;
           if (!ALLOWED_FOLDERS.includes(folder)) {
             return cb(
               new BadRequestException(
-                `Carpeta de destino no válida. Permitidas: ${ALLOWED_FOLDERS.join(', ')}`,
+                `Carpeta de destino no válida. Los documentos PDF deben cargarse mediante /documents/upload.`,
+              ),
+              '',
+            );
+          }
+
+          if (folder === 'companies' && !isPlatformSuperAdmin((req as any).user)) {
+            return cb(
+              new ForbiddenException(
+                'Solo el Super Administrador puede cargar logotipos de compañías.',
               ),
               '',
             );
@@ -40,7 +52,7 @@ export class UploadsController {
 
           cb(null, uploadPath);
         },
-        filename: (req, file, cb) => {
+        filename: (_req, file, cb) => {
           const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
           const ext = extname(file.originalname).toLowerCase();
           const cleanName = file.originalname
@@ -50,36 +62,29 @@ export class UploadsController {
           cb(null, filename);
         },
       }),
-      fileFilter: (req, file, cb) => {
-        const folder = req.params.folder;
-        const isPdf = file.mimetype === 'application/pdf';
+      fileFilter: (_req, file, cb) => {
         const isImage = file.mimetype.match(/\/(jpg|jpeg|png|webp)$/);
-
-        if (folder === 'documents' && !isPdf) {
+        if (!isImage) {
           return cb(
-            new BadRequestException('En la carpeta de documentos solo se permiten archivos PDF'),
+            new BadRequestException('Solo se permiten imágenes en formato JPG, PNG o WEBP'),
             false,
           );
         }
-
-        if ((folder === 'users' || folder === 'companies') && !isImage) {
-          return cb(
-            new BadRequestException('Para imágenes de usuario y compañías solo se permiten JPG, PNG o WEBP'),
-            false,
-          );
-        }
-
         cb(null, true);
       },
       limits: {
-        fileSize: 25 * 1024 * 1024, // Límite de 25MB para documentos
+        fileSize: 2 * 1024 * 1024,
       },
     }),
   )
   uploadFile(
     @UploadedFile() file: Express.Multer.File,
     @Param('folder') folder: string,
+    @GetUser() user: any,
   ) {
+    if (folder === 'companies' && !isPlatformSuperAdmin(user)) {
+      throw new ForbiddenException('Solo el Super Administrador puede cargar logotipos de compañías.');
+    }
     if (!file) {
       throw new BadRequestException('El archivo es requerido');
     }

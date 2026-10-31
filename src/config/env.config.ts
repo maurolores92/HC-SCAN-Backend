@@ -1,3 +1,5 @@
+import { resolveDatabaseEnv } from './env-resolver';
+
 export interface IDbConfig {
   host: any;
   port: number;
@@ -11,13 +13,7 @@ export interface IAppConfig {
   openRouterApiKey: string;
 }
 
-export const DBConfig = (): IDbConfig => ({
-  host: process.env.DATABASE_HOST,
-  port: Number(process.env.DATABASE_PORT),
-  database: process.env.DATABASE_NAME,
-  username: process.env.DATABASE_USER,
-  password: process.env.DATABASE_PASSWORD,
-});
+export const DBConfig = (): IDbConfig => resolveDatabaseEnv();
 
 export const AppConfig = (): IAppConfig => ({
   port: Number(process.env.PORT) || 5000,

@@ -1,6 +1,7 @@
 import {
   Injectable,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
@@ -12,8 +13,8 @@ import { RolePermission } from '../../permissions/role-permission/role-permissio
 
 /**
  * @service UsersCustomRolesService
- * Administra la creación, modificación, asignación y baja de roles personalizados
- * creados por usuarios administradores.
+ * Administra la creación, modificación, consulta y baja de roles personalizados
+ * aislados estrictamente por `companyId`.
  */
 @Injectable()
 export class UsersCustomRolesService {
@@ -23,30 +24,40 @@ export class UsersCustomRolesService {
     private readonly sequelize: Sequelize,
   ) {}
 
-  /**
-   * Crea un nuevo rol personalizado asignado a un administrador.
-   */
-  async createCustomRole(adminUserId: number, roleData: any): Promise<Role> {
+  async createCustomRole(
+    adminUserId: number,
+    roleData: any,
+    companyId: number,
+  ): Promise<Role> {
     const transaction = await this.sequelize.transaction();
     try {
       const admin = await this.userModel.findByPk(adminUserId, { transaction });
-      if (!admin || !admin.isAdmin) {
-        throw new BadRequestException(
-          'Solo los usuarios admin pueden crear roles',
-        );
+      if (!admin || admin.companyId !== companyId) {
+        throw new ForbiddenException('Acceso denegado a otra compañía.');
+      }
+
+      const normalizedSlug = String(roleData.slug || roleData.name || '')
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, '-');
+
+      if (!normalizedSlug || ['superadmin', 'company_admin', 'admin', 'user'].includes(normalizedSlug)) {
+        throw new BadRequestException('El nombre o slug del rol está reservado.');
       }
 
       const existingRole = await Role.findOne({
-        where: { slug: roleData.slug, userId: adminUserId },
+        where: { slug: normalizedSlug, companyId },
         transaction,
       });
       if (existingRole) {
-        throw new BadRequestException('Ya existe un rol con este slug');
+        throw new BadRequestException('Ya existe un rol con este slug en su compañía.');
       }
 
       const newRole = await Role.create(
         {
           ...roleData,
+          slug: normalizedSlug,
+          companyId,
           userId: adminUserId,
         },
         { transaction },
@@ -60,34 +71,29 @@ export class UsersCustomRolesService {
     }
   }
 
-  /**
-   * Obtiene los roles personalizados creados por un usuario.
-   */
-  async getUserCustomRoles(userId: number): Promise<Role[]> {
+  async getUserCustomRoles(userId: number, companyId: number): Promise<Role[]> {
     return Role.findAll({
-      where: { userId },
+      where: { userId, companyId },
     });
   }
 
-  /**
-   * Obtiene todos los roles globales disponibles en el sistema (sin superadmin).
-   */
-  async getAllAvailableRoles(): Promise<Role[]> {
+  async getAllAvailableRoles(companyId: number): Promise<Role[]> {
     return Role.findAll({
       where: {
-        userId: null,
         slug: { [Op.ne]: 'superadmin' },
+        [Op.or]: [
+          { companyId: null, slug: { [Op.in]: ['company_admin', 'user'] } },
+          { companyId },
+        ],
       },
     });
   }
 
-  /**
-   * Modifica los datos de un rol personalizado existente.
-   */
   async updateCustomRole(
     adminUserId: number,
     roleId: number,
     roleData: any,
+    companyId: number,
   ): Promise<Role> {
     const transaction = await this.sequelize.transaction();
     try {
@@ -96,21 +102,28 @@ export class UsersCustomRolesService {
         throw new NotFoundException('Rol no encontrado');
       }
 
-      if (role.userId !== adminUserId) {
-        throw new BadRequestException('No tienes permiso para editar este rol');
+      if (!role.companyId || role.companyId !== companyId) {
+        throw new ForbiddenException('No tienes permiso para editar este rol');
       }
 
-      if (roleData.slug && roleData.slug !== role.slug) {
+      const safeUpdates = { ...roleData };
+      delete safeUpdates.companyId;
+      delete safeUpdates.userId;
+
+      if (safeUpdates.slug && safeUpdates.slug !== role.slug) {
+        if (['superadmin', 'company_admin', 'admin', 'user'].includes(String(safeUpdates.slug).toLowerCase())) {
+          throw new BadRequestException('Slug reservado por el sistema');
+        }
         const existingRole = await Role.findOne({
-          where: { slug: roleData.slug, userId: adminUserId },
+          where: { slug: safeUpdates.slug, companyId, id: { [Op.ne]: roleId } },
           transaction,
         });
         if (existingRole) {
-          throw new BadRequestException('Ya existe un rol con este slug');
+          throw new BadRequestException('Ya existe un rol con este slug en su compañía');
         }
       }
 
-      await role.update(roleData, { transaction });
+      await role.update(safeUpdates, { transaction });
       await transaction.commit();
       return role;
     } catch (error) {
@@ -119,10 +132,11 @@ export class UsersCustomRolesService {
     }
   }
 
-  /**
-   * Da de baja un rol personalizado si no tiene usuarios activos asignados.
-   */
-  async deleteCustomRole(adminUserId: number, roleId: number): Promise<void> {
+  async deleteCustomRole(
+    _adminUserId: number,
+    roleId: number,
+    companyId: number,
+  ): Promise<void> {
     const transaction = await this.sequelize.transaction();
     try {
       const role = await Role.findByPk(roleId, { transaction });
@@ -130,21 +144,16 @@ export class UsersCustomRolesService {
         throw new NotFoundException('Rol no encontrado');
       }
 
-      if (role.userId !== adminUserId) {
-        throw new BadRequestException(
-          'No tienes permiso para eliminar este rol',
-        );
+      if (!role.companyId || role.companyId !== companyId) {
+        throw new ForbiddenException('No tienes permiso para eliminar este rol');
       }
 
-      // Desasociar el rol de los usuarios asignados (pasan a no tener rol)
       await this.userModel.update(
         { roleId: null },
-        { where: { roleId }, transaction },
+        { where: { roleId, companyId }, transaction },
       );
 
-      // Limpiar permisos del rol
       await RolePermission.destroy({ where: { roleId }, transaction });
-
       await role.destroy({ transaction });
       await transaction.commit();
     } catch (error) {

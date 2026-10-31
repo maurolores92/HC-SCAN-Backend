@@ -1,12 +1,14 @@
 import {
   AutoIncrement,
+  BelongsTo,
   Column,
   DataType,
-  HasMany,
+  ForeignKey,
   Model,
   PrimaryKey,
   Table,
 } from 'sequelize-typescript';
+import { Plan } from '../plans/plan.model';
 
 export enum CompanyStatus {
   ACTIVE = 'ACTIVE',
@@ -26,7 +28,6 @@ export const DEFAULT_ENABLED_MODULES = [
   'users',
   'roles',
   'audit',
-  'notifications',
 ];
 
 @Table({
@@ -98,16 +99,84 @@ export class Company extends Model {
   })
   declare status: CompanyStatus;
 
+  @ForeignKey(() => Plan)
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+    field: 'plan_id',
+  })
+  declare planId: number | null;
+
+  @BelongsTo(() => Plan, { foreignKey: 'planId', constraints: false })
+  declare plan: Plan | null;
+
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'is_trial',
+  })
+  declare isTrial: boolean;
+
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+    defaultValue: null,
+    field: 'trial_ends_at',
+  })
+  declare trialEndsAt: Date | null;
+
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'use_custom_limits',
+  })
+  declare useCustomLimits: boolean;
+
   /**
-   * Límite máximo de usuarios permitidos para esta empresa.
+   * Límite máximo de usuarios permitidos para esta empresa (`null` = ilimitado).
    */
   @Column({
     type: DataType.INTEGER,
-    allowNull: false,
+    allowNull: true,
     defaultValue: 10,
     field: 'max_users',
   })
-  declare maxUsers: number;
+  declare maxUsers: number | null;
+
+  /**
+   * Override de cantidad máxima de documentos PDF (`null` = ilimitado / heredado del plan).
+   */
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+    field: 'max_documents',
+  })
+  declare maxDocuments: number | null;
+
+  /**
+   * Override de almacenamiento físico máximo en MB (`null` = ilimitado / heredado del plan).
+   */
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+    field: 'max_storage_mb',
+  })
+  declare maxStorageMb: number | null;
+
+  /**
+   * Override de consultas mensuales a la IA (`null` = ilimitado / heredado del plan).
+   */
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+    field: 'max_ai_queries_monthly',
+  })
+  declare maxAiQueriesMonthly: number | null;
 
   /**
    * Módulos habilitados específicamente para esta empresa.

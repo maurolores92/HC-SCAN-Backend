@@ -9,7 +9,7 @@ import {
   Query,
   Put,
   ParseIntPipe,
-  BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -19,28 +19,42 @@ import { FindAllQuerysDto } from './dto/querys.dto';
 import { Auth } from '../auth/decorators/auth.decorator';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import {
+  isPlatformSuperAdmin,
+  requireTenantCompanyId,
+} from '../../common/utils/tenant-scope.util';
 
+/**
+ * Controlador de Usuarios por Compañía.
+ * Cada compañía administra exclusivamente sus propios usuarios; el Super Admin solo edita su propio perfil.
+ */
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
+
+  private assertTenantUserManager(user: any): number {
+    if (isPlatformSuperAdmin(user)) {
+      throw new ForbiddenException(
+        'El Super Administrador de plataforma no gestiona usuarios operativos de compañías.',
+      );
+    }
+    return requireTenantCompanyId(user);
+  }
 
   @Post()
   @Auth()
   @RequirePermission('CREATE_USER')
   async create(@Body() createUserDto: CreateUserDto, @GetUser() user: any) {
-    if (!user.isAdmin && user.role !== 'superadmin' && user.role !== 'company_admin') {
-      throw new BadRequestException(
-        'Solo administradores pueden crear nuevos usuarios',
-      );
-    }
-    return this.usersService.create(createUserDto, user.id, user.companyId);
+    const tenantCompanyId = this.assertTenantUserManager(user);
+    return this.usersService.create(createUserDto, user.id, tenantCompanyId);
   }
 
   @Get('all')
   @Auth()
   @RequirePermission('VIEW_USERS')
   findAll(@GetUser() user: any) {
-    return this.usersService.findAll(user.id);
+    const tenantCompanyId = this.assertTenantUserManager(user);
+    return this.usersService.findAll(tenantCompanyId);
   }
 
   @Get('profile-with-roles')
@@ -51,39 +65,49 @@ export class UsersController {
 
   @Post('roles/create')
   @Auth()
+  @RequirePermission('CREATE_ROLE')
   async createCustomRole(@Body() roleData: any, @GetUser() user: any) {
-    return this.usersService.createCustomRole(user.id, roleData);
+    const tenantCompanyId = this.assertTenantUserManager(user);
+    return this.usersService.createCustomRole(user.id, roleData, tenantCompanyId);
   }
 
   @Get('roles/my-roles')
   @Auth()
+  @RequirePermission('VIEW_ROLES')
   async getMyRoles(@GetUser() user: any) {
-    return this.usersService.getUserCustomRoles(user.id);
+    const tenantCompanyId = this.assertTenantUserManager(user);
+    return this.usersService.getUserCustomRoles(user.id, tenantCompanyId);
   }
 
   @Get('roles/available')
   @Auth()
-  async getAvailableRoles() {
-    return this.usersService.getAllAvailableRoles();
+  @RequirePermission('VIEW_ROLES', 'CREATE_USER', 'UPDATE_USER')
+  async getAvailableRoles(@GetUser() user: any) {
+    const tenantCompanyId = this.assertTenantUserManager(user);
+    return this.usersService.getAllAvailableRoles(tenantCompanyId);
   }
 
   @Put('roles/:id')
   @Auth()
+  @RequirePermission('UPDATE_ROLE')
   async updateCustomRole(
     @Param('id', ParseIntPipe) id: number,
     @Body() roleData: any,
     @GetUser() user: any,
   ) {
-    return this.usersService.updateCustomRole(user.id, id, roleData);
+    const tenantCompanyId = this.assertTenantUserManager(user);
+    return this.usersService.updateCustomRole(user.id, id, roleData, tenantCompanyId);
   }
 
   @Delete('roles/:id')
   @Auth()
+  @RequirePermission('DELETE_ROLE')
   async deleteCustomRole(
     @Param('id', ParseIntPipe) id: number,
     @GetUser() user: any,
   ) {
-    await this.usersService.deleteCustomRole(user.id, id);
+    const tenantCompanyId = this.assertTenantUserManager(user);
+    await this.usersService.deleteCustomRole(user.id, id, tenantCompanyId);
     return { message: 'Rol eliminado exitosamente' };
   }
 
@@ -94,13 +118,9 @@ export class UsersController {
     @GetUser() user: any,
     @Query(new ValidationPipe({ transform: true })) query: FindAllQuerysDto,
   ) {
+    const tenantCompanyId = this.assertTenantUserManager(user);
     const { page = 0, pageSize = 10, ...filters } = query;
-
-    // Si no es superadmin, forzar el filtro por la compañía del usuario autenticado
-    const isSuperAdmin = user.role === 'superadmin';
-    if (!isSuperAdmin && user.companyId) {
-      filters.companyId = user.companyId;
-    }
+    filters.companyId = tenantCompanyId;
 
     return this.usersService.findAllQuerys(
       Number(page),
@@ -111,14 +131,12 @@ export class UsersController {
 
   @Get(':id')
   @Auth()
-  @RequirePermission('VIEW_USERS')
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.usersService.findOne(id);
+  findOne(@Param('id', ParseIntPipe) id: number, @GetUser() user: any) {
+    return this.usersService.findOne(id, user);
   }
 
   @Put(':id')
   @Auth()
-  @RequirePermission('UPDATE_USER')
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() updateUserDto: UpdateUserDto,
@@ -131,6 +149,7 @@ export class UsersController {
   @Auth()
   @RequirePermission('DELETE_USER')
   remove(@Param('id', ParseIntPipe) id: number, @GetUser() user: any) {
+    this.assertTenantUserManager(user);
     return this.usersService.deleteUser(id, user);
   }
 
@@ -139,18 +158,20 @@ export class UsersController {
   async changePassword(
     @Param('id', ParseIntPipe) id: number,
     @Body() changePasswordDto: ChangePasswordDto,
+    @GetUser() user: any,
   ) {
-    return this.usersService.changePassword(id, changePasswordDto.password);
+    return this.usersService.changePassword(id, changePasswordDto.password, user);
   }
 
   @Put(':id/permissions')
   @Auth()
-  @RequirePermission('ASSIGN_PERMISSIONS')
+  @RequirePermission('UPDATE_USER')
   async updateDirectPermissions(
     @Param('id', ParseIntPipe) id: number,
     @Body('permissionIds') permissionIds: number[],
     @GetUser() user: any,
   ) {
+    this.assertTenantUserManager(user);
     return this.usersService.updateDirectPermissions(id, permissionIds, user);
   }
 }

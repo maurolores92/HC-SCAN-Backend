@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { UsersModule } from '../users/users.module';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { resolveJwtSecret } from '../../config/env-resolver';
 
 @Module({
   imports: [
@@ -17,7 +18,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       imports: [],
       inject: [],
       useFactory: () => ({
-        secret: process.env.JWT_SECRET_KEY,
+        secret: resolveJwtSecret(),
         signOptions: { expiresIn: '24h' },
       }),
     }),

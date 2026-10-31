@@ -1,37 +1,68 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Role } from '../role/role.model';
 import { Users } from '../users/users.model';
 import { Company, CompanyStatus } from '../companies/company.model';
-import { Permission, CategoriaPermiso } from '../permissions/permission.model';
-import { permissionsData } from './data/permissions.data';
+import { Plan } from '../plans/plan.model';
+import { Permission } from '../permissions/permission.model';
+import { RolePermission } from '../permissions/role-permission/role-permission.model';
+import { UserPermission } from '../permissions/user-permission/user-permission.model';
+import {
+  DEPRECATED_PLATFORM_PERMISSIONS,
+  permissionsData,
+} from './data/permissions.data';
+import { defaultPlansData } from './data/plans.data';
 
 @Injectable()
-export class SeedService implements OnModuleInit {
+export class SeedService {
   private readonly logger = new Logger(SeedService.name);
 
   constructor(private sequelize: Sequelize) {}
 
-  async onModuleInit() {
-    try {
-      // 1. Asegurar compañía matriz por defecto
-      const defaultCompany = await this.ensureDefaultCompany();
+  async ensureDefaultPlans(): Promise<{ enterprisePlan: Plan | null; defaultPlan: Plan | null }> {
+    let enterprisePlan: Plan | null = null;
+    let defaultPlan: Plan | null = null;
 
-      // 2. Asegurar roles canónicos del sistema
-      await this.ensureSystemRoles();
+    for (const p of defaultPlansData) {
+      const [plan, created] = await Plan.findOrCreate({
+        where: { slug: p.slug },
+        defaults: p as any,
+      });
 
-      // 3. Asegurar catálogo de permisos
-      await this.seedPermissions();
+      if (created) {
+        this.logger.log(`[SeedService] Plan base creado: ${plan.name} (${plan.slug})`);
+      } else {
+        await plan.update({
+          name: p.name,
+          description: p.description,
+          priceMonthly: p.priceMonthly,
+          currency: (p as any).currency || 'ARS',
+          isTrial: (p as any).isTrial ?? false,
+          trialDays: (p as any).trialDays ?? null,
+          maxUsers: p.maxUsers,
+          maxDocuments: p.maxDocuments,
+          maxStorageMb: p.maxStorageMb,
+          maxAiQueriesMonthly: p.maxAiQueriesMonthly,
+          badgeColor: p.badgeColor,
+        });
+      }
 
-      // 4. Asegurar usuario Super Admin de la plataforma
-      await this.ensureSuperAdminUser(defaultCompany?.id);
-    } catch (err: any) {
-      this.logger.error(`Error en inicialización de seeds: ${err?.message}`, err?.stack);
+      if (plan.slug === 'enterprise') enterprisePlan = plan;
+      if (plan.isDefault) defaultPlan = plan;
     }
+
+    if (defaultPlan) {
+      await Company.update(
+        { planId: defaultPlan.id },
+        { where: { planId: null, slug: { [Op.ne]: 'helpcopies' } } },
+      );
+    }
+
+    return { enterprisePlan, defaultPlan };
   }
 
-  async ensureDefaultCompany(): Promise<Company> {
+  async ensureDefaultCompany(enterprisePlanId?: number | null): Promise<Company> {
     const [company, created] = await Company.findOrCreate({
       where: { slug: 'helpcopies' },
       defaults: {
@@ -43,6 +74,7 @@ export class SeedService implements OnModuleInit {
         phone: '+54 11 4000-0000',
         address: 'Buenos Aires, Argentina',
         status: CompanyStatus.ACTIVE,
+        planId: enterprisePlanId ?? null,
         settings: {
           maxPdfUploadSizeMb: 25,
           aiExtractionEnabled: true,
@@ -52,6 +84,8 @@ export class SeedService implements OnModuleInit {
 
     if (created) {
       this.logger.log(`[SeedService] Compañía matriz creada: ${company.name} (${company.slug})`);
+    } else if (!company.planId && enterprisePlanId) {
+      await company.update({ planId: enterprisePlanId });
     }
 
     return company;
@@ -93,6 +127,28 @@ export class SeedService implements OnModuleInit {
   async seedPermissions() {
     const transaction = await this.sequelize.transaction();
     try {
+      // Eliminar permisos de plataforma que ya no deben existir como permisos delegables
+      const deprecatedRows = await Permission.findAll({
+        where: { name: { [Op.in]: DEPRECATED_PLATFORM_PERMISSIONS } },
+        transaction,
+      });
+
+      if (deprecatedRows.length > 0) {
+        const deprecatedIds = deprecatedRows.map((p) => p.id);
+        await RolePermission.destroy({
+          where: { permissionId: { [Op.in]: deprecatedIds } },
+          transaction,
+        });
+        await UserPermission.destroy({
+          where: { permissionId: { [Op.in]: deprecatedIds } },
+          transaction,
+        });
+        await Permission.destroy({
+          where: { id: { [Op.in]: deprecatedIds } },
+          transaction,
+        });
+      }
+
       let createdCount = 0;
       let updatedCount = 0;
 
@@ -118,63 +174,38 @@ export class SeedService implements OnModuleInit {
         }
       }
 
-      const allPermissions = await Permission.findAll({ transaction });
+      const allTenantPermissions = await Permission.findAll({ transaction });
 
-      // Super Admin: todos los permisos
+      // Super Admin: acceso total (además de sus bypasses exclusivos por rol)
       const superAdminRole = await Role.findOne({
         where: { slug: 'superadmin' },
         transaction,
       });
       if (superAdminRole) {
-        await superAdminRole.$set('permissions', allPermissions, { transaction });
+        await superAdminRole.$set('permissions', allTenantPermissions, { transaction });
       }
 
-      // Company Admin: permisos de compañía, usuarios, roles, documentos, auditoría y notificaciones
+      // Company Admin: todos los permisos operativos dentro de su compañía
       const companyAdminRole = await Role.findOne({
         where: { slug: 'company_admin' },
         transaction,
       });
       if (companyAdminRole) {
-        const companyAdminPerms = allPermissions.filter((p: any) =>
-          [
-            'VIEW_DASHBOARD',
-            'VIEW_COMPANIES',
-            'UPDATE_COMPANY',
-            'VIEW_USERS',
-            'CREATE_USER',
-            'UPDATE_USER',
-            'DELETE_USER',
-            'VIEW_ROLES',
-            'CREATE_ROLE',
-            'UPDATE_ROLE',
-            'DELETE_ROLE',
-            'VIEW_PERMISSIONS',
-            'ASSIGN_PERMISSIONS',
-            'VIEW_DOCUMENTS',
-            'UPLOAD_DOCUMENT',
-            'DELETE_DOCUMENT',
-            'QUERY_AI_DOCUMENTS',
-            'VIEW_AUDITS',
-            'VIEW_NOTIFICATIONS',
-            'MANAGE_NOTIFICATIONS',
-          ].includes(p.name),
-        );
-        await companyAdminRole.$set('permissions', companyAdminPerms, { transaction });
+        await companyAdminRole.$set('permissions', allTenantPermissions, { transaction });
       }
 
-      // Operador de Documentos: visualización y trabajo con PDFs e IA
+      // Operador de Documentos: visualización de dashboard y trabajo con PDFs e IA
       const userRole = await Role.findOne({
         where: { slug: 'user' },
         transaction,
       });
       if (userRole) {
-        const userPerms = allPermissions.filter((p: any) =>
+        const userPerms = allTenantPermissions.filter((p: any) =>
           [
             'VIEW_DASHBOARD',
             'VIEW_DOCUMENTS',
             'UPLOAD_DOCUMENT',
             'QUERY_AI_DOCUMENTS',
-            'VIEW_NOTIFICATIONS',
           ].includes(p.name),
         );
         await userRole.$set('permissions', userPerms, { transaction });
@@ -182,7 +213,7 @@ export class SeedService implements OnModuleInit {
 
       await transaction.commit();
       this.logger.log(
-        `[SeedService] Permisos procesados (Nuevos: ${createdCount}, Actualizados: ${updatedCount})`,
+        `[SeedService] Permisos procesados (Nuevos: ${createdCount}, Actualizados: ${updatedCount}, Deprecados eliminados: ${deprecatedRows.length})`,
       );
     } catch (error) {
       await transaction.rollback();
@@ -190,7 +221,7 @@ export class SeedService implements OnModuleInit {
     }
   }
 
-  async ensureSuperAdminUser(defaultCompanyId?: number) {
+  async ensureSuperAdminUser() {
     try {
       const superAdminRole = await Role.findOne({
         where: { slug: 'superadmin', userId: null },
@@ -219,21 +250,23 @@ export class SeedService implements OnModuleInit {
           phone: '+54 11 0000-0000',
           password: hashedPassword,
           roleId: superAdminRole.id,
-          companyId: defaultCompanyId ?? null,
+          companyId: null,
           isAdmin: true,
           status: 'ACTIVE',
         });
         this.logger.log(
-          '[SeedService] Super Admin inicial creado: superadmin / superadmin@helpcopies.com (pass: superadmin123)',
+          '[SeedService] Super Admin global creado: superadmin / superadmin@helpcopies.com (companyId: null)',
         );
       } else {
         if (
           existingSuperAdmin.roleId !== superAdminRole.id ||
-          !existingSuperAdmin.isAdmin
+          !existingSuperAdmin.isAdmin ||
+          existingSuperAdmin.companyId !== null
         ) {
           await existingSuperAdmin.update({
             roleId: superAdminRole.id,
             isAdmin: true,
+            companyId: null,
           });
         }
       }
@@ -248,16 +281,18 @@ export class SeedService implements OnModuleInit {
   }
 
   async seedUsers() {
-    const company = await this.ensureDefaultCompany();
-    await this.ensureSuperAdminUser(company.id);
+    const { enterprisePlan } = await this.ensureDefaultPlans();
+    await this.ensureDefaultCompany(enterprisePlan?.id);
+    await this.ensureSuperAdminUser();
     return { success: true, message: 'Usuarios base creados exitosamente' };
   }
 
   async seedAll() {
-    const company = await this.ensureDefaultCompany();
+    const { enterprisePlan } = await this.ensureDefaultPlans();
+    await this.ensureDefaultCompany(enterprisePlan?.id);
     await this.ensureSystemRoles();
     await this.seedPermissions();
-    await this.ensureSuperAdminUser(company.id);
+    await this.ensureSuperAdminUser();
 
     return {
       success: true,

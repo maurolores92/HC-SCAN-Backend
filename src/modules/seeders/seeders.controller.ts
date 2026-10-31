@@ -1,32 +1,41 @@
-import { Controller, Post } from '@nestjs/common';
+import { Controller, Post, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { SeedService } from './seeders.service';
+import { GetUser } from '../auth/decorators/get-user.decorator';
+import { assertPlatformSuperAdmin } from '../../common/utils/tenant-scope.util';
 
 @Controller('seed')
+@UseGuards(AuthGuard('jwt'))
 export class SeedController {
   constructor(private readonly seedService: SeedService) {}
 
   @Post()
-  async executeSeed() {
-    return await this.seedService.seed();
+  async executeSeed(@GetUser() user: any) {
+    assertPlatformSuperAdmin(user);
+    return this.seedService.seed();
   }
 
   @Post('users')
-  async seedUsers() {
-    return await this.seedService.seedUsers();
+  async seedUsers(@GetUser() user: any) {
+    assertPlatformSuperAdmin(user);
+    return this.seedService.seedUsers();
   }
 
   @Post('roles')
-  async seedRoles() {
-    return await this.seedService.seedRoles();
+  async seedRoles(@GetUser() user: any) {
+    assertPlatformSuperAdmin(user);
+    return this.seedService.seedRoles();
   }
 
   @Post('permissions')
-  async seedPermissions() {
-    return await this.seedService.seedPermissions();
+  async seedPermissions(@GetUser() user: any) {
+    assertPlatformSuperAdmin(user);
+    return this.seedService.seedPermissions();
   }
 
   @Post('all')
-  async seedAll() {
-    return await this.seedService.seedAll();
+  async seedAll(@GetUser() user: any) {
+    assertPlatformSuperAdmin(user);
+    return this.seedService.seedAll();
   }
 }

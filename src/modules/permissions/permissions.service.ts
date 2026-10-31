@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { Permission } from './permission.model';
 import { Role } from '../role/role.model';
-import { NotFoundException } from '@nestjs/common';
+import { DEPRECATED_PLATFORM_PERMISSIONS } from '../seeders/data/permissions.data';
+import { isPlatformSuperAdmin } from '../../common/utils/tenant-scope.util';
 
 @Injectable()
 export class PermissionsService {
@@ -12,12 +14,34 @@ export class PermissionsService {
   ) {}
 
   async findAll(user?: any): Promise<Permission[]> {
+    const superAdmin = isPlatformSuperAdmin(user);
+
     const allPermissions = await this.permissionModel.findAll({
-      include: [Role],
+      where: {
+        name: { [Op.notIn]: DEPRECATED_PLATFORM_PERMISSIONS },
+      },
+      include: superAdmin
+        ? [
+            {
+              model: Role,
+              where: { companyId: null },
+              required: false,
+            },
+          ]
+        : [],
+      order: [
+        ['categoria', 'ASC'],
+        ['id', 'ASC'],
+      ],
     });
 
-    if (user && user.role !== 'superadmin') {
-      const userPermissions = user.permissions || [];
+    if (!superAdmin && user) {
+      if (user.isAdmin === true || user.role === 'company_admin') {
+        return allPermissions;
+      }
+      const userPermissions: string[] = Array.isArray(user.permissions)
+        ? user.permissions
+        : [];
       return allPermissions.filter((p) => userPermissions.includes(p.name));
     }
 
@@ -30,7 +54,9 @@ export class PermissionsService {
     description?: string,
     displayName?: string,
   ): Promise<Permission> {
-    const permission = await this.permissionModel.findByPk(permissionId);
+    const permission = await this.permissionModel.findByPk(permissionId, {
+      include: [Role],
+    });
     if (!permission) {
       throw new NotFoundException(
         `Permiso con id ${permissionId} no encontrado`,
@@ -51,13 +77,29 @@ export class PermissionsService {
       await permission.save();
     }
 
-    // Actualizar la tabla intermedia RolePermission
-    // Sequelize asocia los modelos belongsToMany usando $set
-    await permission.$set('roles', roleIds);
+    // Preservar asignaciones de roles personalizados de compañías (companyId !== null)
+    const existingTenantRoleIds = Array.isArray(permission.roles)
+      ? permission.roles
+          .filter((r) => r.companyId !== null && r.companyId !== undefined)
+          .map((r) => r.id)
+      : [];
 
-    // Retornar el permiso actualizado con sus roles
+    const validGlobalRoles = await Role.findAll({
+      where: {
+        id: { [Op.in]: roleIds || [] },
+        companyId: null,
+      },
+      attributes: ['id'],
+    });
+    const globalRoleIds = validGlobalRoles.map((r) => r.id);
+
+    const mergedRoleIds = Array.from(
+      new Set([...globalRoleIds, ...existingTenantRoleIds]),
+    );
+    await permission.$set('roles', mergedRoleIds);
+
     return this.permissionModel.findByPk(permissionId, {
-      include: [Role],
+      include: [{ model: Role, where: { companyId: null }, required: false }],
     }) as Promise<Permission>;
   }
 }
